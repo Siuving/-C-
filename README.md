@@ -731,3 +731,336 @@ pza = &b;
 
 
 总而言之，多态是一种威力强大的设计机制，允许你继一个抽象的 public 接口之后，封装相关的类型。Library_materials 体系就是一例。需要付出的代价就是额外的间接性一一不论是在 “内存的获得” 或是在 “类型的决断” 上。C++ 通过 class 的 **pointers** 和 **references** 来支持多态，这种程序设计风格就称为 “面向对象”。
+
+
+
+
+
+## 第 2 章 构造函数语意学（The Semantics of Constructors）
+
+
+
+### 2.1 Default Constructor 的建构操作
+
+```c++
+class Foo { public: int val; Foo* pnext; };
+
+void foo_bar()
+{
+    // 程序要求 bar's members 都被清为 0
+    Foo bar;
+    if (bar.val || bar.pnext) 
+        // ... do something
+}
+```
+
+以下文字的原文多次使用 **implementation** 这个字眼，许多时候它是指 “C++实现器”，也就是指 C++ 编译器，这种情况下我会将它直接译为编译器。
+
+在这个例子中，正确的程序语意是要求 Foo 有一个 default constructor，可以将它的两个 members 初始化为 0。上面这段码可曾符合 ARM 所说的 “在需要的时候”? 答案是 no。其间的差别在于一个是程序的需要，一个是编译器的需要。程序如果有需要，那是程序员的责任；本例要承担责任的是设计class Foo 的人。是的，上述程序片段并不会合成出一个 default constructor。
+
+
+
+即使有需要为 class Foo 合成一个 default constructor，那个 constructor 也不会将两个 data members val 和 pnext 初始化为 0。为了让上一段码正确执行，class Foo 的设计者必须提供一个明显的 default constructor，将两个 members 适当地初始化。
+
+
+
+对于 class X，如果没有任何 user-declared constructor，那么会有一个 default constructor 被暗中（ implicitly)声明出来……一个被暗中声明出来的 default constructor 将是一个 trivial（浅薄而无能，没啥用的) constructor……
+
+
+
+
+
+#### “带有 Default Constructor” 的 Member Class Object
+
+如果一个 class 没有任何 constructor，但它内含一个 member object，而后者有 default constructor ，那么这个 class的 implicit default constructor 就是 “nontrivial”，编译器需要为此 class 合成出一个 default constructor。不过这个合成操作只有在 constructor 真正需要被调用时才会发生。
+
+
+
+于是出现了一个有趣的问题：在 C++ 各个不同的编译模块中（原文为compilation model，是否为 compilation module 之误?不同的编译模块意指不同的档案)，编译器如何避免合成出多个 default constructor(譬如说一个是为 A.C 档合成,另一个是为 B.C 档合成)呢？
+
+解决方法是把合成的 default constructor. copyconstructor、 destructor、 assignment copy operator 都以 **inline**方式完成。一个 inline 函数有 **静态链接( static linkage）**，不会被档案以外者看到．如果函数太复杂，不适合做成 inline，就会合成出一个 explicit non-inline static 实体（ inline 函数将在 4.5 节有比较详细的说明)）。
+
+
+
+编译器为 class Bar 合成一个 default constructor：
+
+```c++
+class Foo { public: Foo(), Foo(int) ...};
+class Bar { public: Foo foo; char *str;};		// Bar对象 里有一个 Foo 类对象
+											// 不是继承，是内含
+void foo_bar()
+{
+    Bar bar;		// Bar::foo 必须在此处初始化
+    			    // Bar::foo 是一个 member object，而其 class Foo 拥有 default constructor
+    if (str) {} ...
+}
+```
+
+被合成的 Bar default constructor 内含必要的代码，能够调用 class Foo 的 default constructor 来处理 member object Bar::foo，但它并不产生任何码来初始化 Bar::str。是的，将 Bar::foo 初始化是编译器的责任，将 Bar::str 初始化则是程序员的责任，被合成的 default constructor 看起来可能是这样：
+
+```c++
+// Bar 的 default constructor 可能会被这样合成
+// 被 member foo 调用 class Foo 的 default constructor
+
+inline
+Bar::Bar()
+{
+    // C++ 伪码
+    foo.Foo::Foo();
+}
+```
+
+再一次请你注意，被合成的 default constructor 只满足编译器的需要，而不是程序的需要。为了让这个程序片段能够正确执行，字符指针 str 也需要被初始化。让我们假设程序员经由下面的 default constructor 提供了 str 的初始化操作：
+
+```c++
+// 程序员定义的 default constructor
+Bar::Bar() { str = 0; }
+```
+
+现在程序的需求获得满足了，但是编译器还需要初始化 member object foo。由于 default constructor 已经被明确地定义出来，编译器没办法合成第二个。“噢，伤脑筋”，你可能会这样说。编译器会采取什么行动呢?
+
+
+
+编译器的行动是：“如果 class A 内含一个或一个以上的 member class objects，那么 class A 的每一个 constructor 必须调用每一个 member classes 的 default constructor”。**编译器会扩张已存在的 constructors**，在其中安插一些码，使得 user code 在被执行之前，先调用必要的 default constructors。沿续前一个例子，扩张后的 constructors 可能像这样：
+
+```c++
+// 扩张后的 default constructor
+// C++ 伪码
+Bar::Bar()
+{
+    foo.Foo::Foo();		// 附加上的 compiler code
+    str = 0;			// explicit user code
+}
+```
+
+如果有多个 class member objects 都要求 constructor 初始化操作，将如何呢? C++ 语言要求以 “member objects 在 class 中的声明次序”来调用各个 constructors。这一点由编译器完成，它为每一个 constructor 安插程序代码，以 “member声明次序” 调用每一个 member 所关联的 default constructors。这些码将被安插在 explicit user code 之前。举个例子，假设我们有以下三个 classes：
+
+```c++
+class Dopey { public: Dopey(); ...};
+class Sneezy { public: Sneezy(int); Sneezy(); ...};
+class Bashful { public: Bashful(); ...};
+```
+
+以及一个 class Snow_White：
+
+```c++
+class Snow_White {
+public:
+    Dopey dopey;	
+    Sneezy sneezy;
+    Bashful bashful;
+    
+private:
+    int mumble;
+};
+```
+
+如果 Snow_White 没有定义 default constructor ，就会有一个 nontrivial constructor 被合成出来，依序调用 Dopey、Sneezy、Bashful 的 default constructors。然而如果 Snow_White 定义了下面这样的 default constructor：
+
+```c++
+// 程序员所写的 default constructor
+Snow_White::Snow_White() : sneezy(1024)
+{
+    mumble = 2048;
+}
+```
+
+它会被扩张为：
+
+```c++
+// 编译器扩张后的 default constructor
+// C++ 伪代码
+Snow_White::Snow_White() : sneezy(1024)
+{
+    // 插入 member class object
+    // 调用其 constructor
+    dopey.Dopey::Dopey();
+    sneezy.Sneezy::Sneezy(1024);
+    bashful.Bashful::Bashful();
+    
+    // explicit user code
+    mumble = 2048;
+}
+```
+
+2.4 节将讨论 “调用 implicit default constructors” 和 “调用明确条列于 member initialization list 中的 constructors” 之间的互动关系。
+
+
+
+#### "带有 Default Constructor" 的 Base Class
+
+类似的道理，如果一个没有任何 constructors 的 class 派生自一个 “带有default constructor” 的 base class，那么这个derived class 的 default constructor 会被视为 nontrivial，并因此需要被合成出来。它将调用上一层 base classes 的default constructor(根据它们的声明次序)。对一个后继派生的 class 而言，这个合成的 constructor 和一个 “被明确提供的 default constructor” 没有什么差异。
+
+如果设计者提供多个 constructors，但其中都没有 default constructor 呢?编译器会扩张现有的每一个 constructors，将 “用以调用所有必要之 default constructors” 的程序代码加进去。它不会合成一个新的 default constructor，这是因为其它 “由 user 所提供的 constructors” 存在的缘故。如果同时亦存在着 “带有 default constructors” 的 member class objects，那些 default constructor 也会被调用——在所有 base class constructor 都被调用之后。（也就是说在自己定义的 constructor 中加入一些 default constructor 可能会产生的代码?）
+
+
+
+#### "带有一个 Virtual Function" 的 Class
+
+另有两种情况，也需要合成出 default constructor：
+
+1. class 声明（或继承）一个 virtual function。
+
+2. class 派生自一个继承串链，其中有一个或更多的 virtual base classes。
+
+
+
+不管哪一种情况，由于缺乏由 user 声明的 constructors，编译器会详细记录合成一个 default constructor 的必要信息。以下面这个程序片段为例：
+
+```c++
+class Widget{
+public:
+    virtual void flip() = 0;
+    // ...
+};
+
+void flip(const Widget& widget) { widget.flip(); }
+
+// 假设 Bell 和 Whistle 都派生自 Widget
+void foo()
+{
+    Bell b;
+    Whistle w;
+    flip(b);
+    flip(w);
+}
+```
+
+下面两个扩张操作会在编译期间发生：
+
+1.   一个 virtual function table（在 cfront 中被称为 vtbl）会被编译器产生出来，内放 class 的 virtual functions 地址
+2.   在每一个 class object 中，一个额外的 pointer member （也就是 vptr )会被编译器合成出来，内含相关的 class vtbl 的地址。
+
+此外，widget.flip(的虚拟引发操作（virtual invocation）会被重新改写，以使用 widget 的 vptr 和 vtbl 中的 flip() 条目：
+
+```c++
+// widget.flip() 的虚拟引发操作 （virtual invocation）的转变
+(*widget.vptr[1])(&widget)
+```
+
+
+
+其中：
+
+1 表示 _flip()_ 在 `virtual table` 中的固定索引；
+
+_&widget_ 代表要交给 “被调用的某个 _flip()_ 函数实体” 的 **this** 指针。
+
+
+
+为了让这个机制发挥功效，编译器必须为每一个 Widget(或其派生类之) object 的 vptr 设定初值，放置适当的 virtual table 地址。对于 class 所定义的每一个 constructor，编译器会安插一些码来做这样的事情（请看 5.2 节)。对于那些未声明任何 constructors 的 classes ，编译器会为它们合成一个 default constructor，以便正确地初始化每一个 class object 的 vptr。
+
+
+
+#### “带有一个 Virtual Base Class” 的 Class
+
+Virtual base class 的实现法在不同的编译器之间有极大的差异。然而，每一种实现法的共通点在于必须使 virtual base class 在其每一个 derived class object 中的位置，能够于执行期准备妥当。例如下面这段程序代码中：
+
+![](XABC.jpg)
+
+```c++
+class X { public: int i;};
+class A : public virtual X { public: int j; };
+class B : public virtual X { public: double d; };
+class C : public A, public B { public: int k; };
+
+// 无法在编译时期决定 （resovle）处 pa -> X::i 的位置
+
+void foo(const A* pa) { pa -> i = 1024; }
+
+main()
+{
+    foo(new A);
+    foo(new C);
+    // ...
+}
+```
+
+编译器无法髓定住 foo(之中 “经由 pa 而存取的X::i” 的实际偏移位置，因为 pa 的真正类型可以改变。编译器必须改变 “执行存取操作” 的那些码，使 X::i 可以延迟至执行期才决定下来。原先 cfront 的做法是靠 “在 derived class object 的每一个 virtual base classes 中安插一个指针”完成。所有 “经由 reference 或 pointer 来存取一个 virtual base class” 的操作都可以通过相关指针完成。在我的例子中，__foo()_ 可以被改写如下，以符合这样的实现策略：
+
+```c++
+// 可能的编译器转变操作
+void foo(const A* pa) { pa -> __vbcX->i = 1024;}
+```
+
+其中 \_\__vbcX_ 表示编译器所产生的指针，指向 virtual base class X
+
+正如你所臆测的那样，\_\__vbcX_ (或编译器所做出的某个什么东西）是在 class object 建构期间被完成的。对于 class 所定义的每一个 constructor，编译器会安插那些 “允许每一个 virtual base class 的执行期存取操作” 的码。如果 class没有声明任何 constructors，编译器必须为它合成一个 default constructor。
+
+<a id="implicit_nontrivial_default_constructor"></a>
+
+#### 总结（合成的默认构造函数产生的 4 种情况）
+
+有 **四种情况**，会导致 “编译器必须为未声明 constructor 之 classes 合成一个 default constructor”。 C++ Stardand 把那些合成物称为 implicit nontrivial default constructors（隐式有用的默认构造）。被合成出来的 constructor **只能满足编译器（而非程序）的需要**。它之所以能够完成任务，是借着 “调用 member object 或 base class 的default constructor” 或是 “为每一个 object 初始化其 virtual function 机制或 virtual base class 机制” 而完成。至于没有存在那四种情况而又没有声明任何 constructor 的 classes，我们说它们拥有的是 implicit trivial default constructors，它们实际上并不会被合成出来。
+
+在合成的 default constructor 中，只有 base class subobjects 和 member class objects 会被初始化。所有其它的 nonstatic data member，如整数、整数指针、整数数组等等都不会被初始化。这些初始化操作对程序而言或许有需要，但对编译器则并非必要。如果程序需要一个 “把某指针设为 0 ” 的 default constructor，那么提供它的人应该是程序员。
+
+个人总结：
+
+1.   成员类对象有默认构造函数
+2.   继承的基类有默认构造函数
+3.   带有虚函数
+4.   带有虚基类
+
+
+
+C++ 新手一般有两个常见的 **误解**：
+
+1.   任何 class 如果没有定义 default constructor，就会被合成出一个来。
+
+2.   编译器合成出来的 default constructor 会明确设定 “ class 内每一个 data member 的默认值”。
+
+如你所见，没有一个是真的！
+
+
+
+（那这里没有合成的话，数据成员的值就是内存的值？上一个留下的？）
+
+
+
+### 2.2 Copy Constructor 的建构操作
+
+有三种情况，会以一个 object 的内容作为另一个 class object 的初值。最明显的一种情况当然就是对一个 object 做明确的初始化操作，像这样：
+
+```c++
+class X {...};
+X x;
+
+// 明确地以一个 object 的内容作为另一个 class object 的初值
+X xx = x;
+```
+
+另两种情况是当 object 被当作参数交给某个函数时，例如：
+
+```c++
+extern void foo(X x);
+
+void bar()
+{
+    X xx;
+    // 以 xx 作为 foo(〉第一个参数的初值（不明显的初始化操作)
+	foo(xx);
+    // ...
+}
+```
+
+以及当函数传回一个 class object 时，例如：
+
+```c++
+X foo_bar()
+{
+    X xx;
+    // ...
+    return xx;
+}
+```
+
+假设 class 设计者明确定义了一个 copy constructor（这是一个constructor,有一个参数的类型是其class type），像下面这样：
+
+
+
+
+
+关键问题索引（ctrl + 左）：
+
+[合成默认构造函数产生的 4 种情况](#implicit_nontrivial_default_constructor)
